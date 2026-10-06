@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "id": "orelock",
+  "version": "${version}",
+  "name": "OreLock",
+  "description": "Auto-minage a cible verrouillee, tout se regle dans le menu (touche : par defaut).",
+  "authors": ["Moi"],
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": { "client": ["com.example.orelock.OreLockClient"] },
+  "mixins": ["orelock.mixins.json"],
+  "depends": {
+    "fabricloader": ">=0.15.11",
+    "minecraft": "1.21.1",
+    "java": ">=21",
+    "fabric-api": "*"
+  }
+}
