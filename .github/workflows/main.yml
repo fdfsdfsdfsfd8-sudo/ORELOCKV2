@@ -1,0 +1,132 @@
+name: Build OreLock
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Recuperer le depot
+        uses: actions/checkout@v4
+
+      - name: Remettre les fichiers dans leurs dossiers
+        shell: bash
+        run: |
+          set -eu
+          R=src/main/resources
+          mkdir -p "$R/assets/orelock/lang"
+
+          # 1) Chaque .java est range selon sa ligne "package ..."
+          for f in *.java; do
+            [ -f "$f" ] || continue
+            pkg=$(grep -m1 '^package ' "$f" | sed 's/^package \(.*\);.*/\1/' | tr -d '\r' | tr . /)
+            if [ -z "$pkg" ]; then
+              echo "::error::Pas de ligne package dans $f"
+              exit 1
+            fi
+            mkdir -p "src/main/java/$pkg"
+            mv "$f" "src/main/java/$pkg/"
+          done
+
+          # 2) Ressources (accepte aussi les noms avec "_" a la place du point)
+          [ -f fabric_mod.json ] && mv fabric_mod.json fabric.mod.json || true
+          [ -f orelock_mixins.json ] && mv orelock_mixins.json orelock.mixins.json || true
+          for f in fabric.mod.json orelock.mixins.json; do
+            if [ -f "$f" ]; then mv "$f" "$R/"; fi
+          done
+          for f in en_us.json fr_fr.json; do
+            if [ -f "$f" ]; then mv "$f" "$R/assets/orelock/lang/"; fi
+          done
+
+          # 3) Verification des fichiers indispensables
+          missing=0
+          for need in build.gradle gradle.properties settings.gradle \
+                      "$R/fabric.mod.json" "$R/orelock.mixins.json" \
+                      "$R/assets/orelock/lang/en_us.json" \
+                      src/main/java/com/example/orelock/OreLockClient.java \
+                      src/main/java/com/example/orelock/Miner.java \
+                      src/main/java/com/example/orelock/MinerScreen.java \
+                      src/main/java/com/example/orelock/mixin/PlayerEntityMixin.java \
+                      src/main/java/com/example/orelock/mixin/ClientPlayerInteractionManagerAccessor.java; do
+            if [ ! -f "$need" ]; then
+              echo "::error::Fichier manquant : $need"
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ]
+
+          echo "Sources trouvees :"
+          find src -type f | sort
+
+      - name: Installer Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Installer Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.10.2
+
+      - name: Compiler
+        run: gradle build --no-daemon --stacktrace
+
+      - name: Verifier le jar
+        shell: bash
+        run: |
+          set -eu
+          JAR=$(find build/libs -maxdepth 1 -name '*.jar' ! -name '*-sources.jar' ! -name '*-dev.jar' | sort | sed -n 1p)
+          if [ -z "$JAR" ]; then echo "::error::Aucun jar produit"; exit 1; fi
+          echo "Jar : $JAR"
+          LIST=$(unzip -Z1 "$JAR")
+          echo "$LIST"
+          bad=0
+          for need in fabric.mod.json orelock.mixins.json \
+                      com/example/orelock/OreLockClient.class \
+                      com/example/orelock/Miner.class \
+                      com/example/orelock/Breaker.class \
+                      com/example/orelock/Hud.class \
+                      com/example/orelock/MinerScreen.class \
+                      com/example/orelock/mixin/ClientPlayerInteractionManagerAccessor.class \
+                      com/example/orelock/mixin/PlayerEntityMixin.class \
+                      assets/orelock/lang/en_us.json \
+                      assets/orelock/lang/fr_fr.json; do
+            if ! grep -Fxq "$need" <<< "$LIST"; then
+              echo "::error::Absent du jar : $need"
+              bad=1
+            fi
+          done
+          # le refmap doit exister et contenir les methodes injectees (sinon les mixins plantent au lancement)
+          REF=$(grep -m1 'refmap\.json$' <<< "$LIST" || true)
+          if [ -z "$REF" ]; then
+            echo "::error::Refmap absent du jar"; bad=1
+          else
+            REFTXT=$(unzip -p "$JAR" "$REF")
+            for m in getBlockBreakingSpeed blockBreakingCooldown; do
+              case "$REFTXT" in
+                *"$m"*) ;;
+                *) echo "::error::Refmap sans $m"; bad=1 ;;
+              esac
+            done
+          fi
+          MOD=$(unzip -p "$JAR" fabric.mod.json)
+          case "$MOD" in
+            *'${version}'*) echo "::error::Version non remplacee dans fabric.mod.json"; bad=1 ;;
+          esac
+          [ "$bad" -eq 0 ]
+          mkdir -p dist
+          cp "$JAR" dist/OreLock.jar
+
+      - name: Envoyer le jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: OreLock
+          path: dist/OreLock.jar
+          if-no-files-found: error
